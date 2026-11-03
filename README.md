@@ -73,7 +73,8 @@ never stops the expected-value forecast (the run reports `"range_method": "error
 
 ## OPIM 5509: a deep learning model instead (`forecast-24h-dl`)
 OPIM 5509 students ship an LSTM instead of a scikit-learn model. Set up the energy project the same way, then deploy
-**`forecast-24h-dl`** (Actions → "Deploy forecast-24h-dl" → Run workflow; it never runs on a push) and train in the
+**`forecast-24h-dl`**: add one more repository variable, `COURSE` = `5509`, then Actions → "Deploy forecast-24h-dl" →
+Run workflow (it never runs on a push, and without `COURSE` = `5509` it stops before touching anything) and train in the
 final project notebooks ([FP1, a basic LSTM](https://github.com/drdave-teaching/OPIM5509-notebooks/blob/main/FinalProject/FP1_Basic_LSTM_Forecast.ipynb),
 then [FP2, an LSTM that gives a range](https://github.com/drdave-teaching/OPIM5509-notebooks/blob/main/FinalProject/FP2_Probabilistic_LSTM.ipynb)).
 It writes the same forecast files as `forecast-24h`, so deploy one or the other: the DL workflow pauses

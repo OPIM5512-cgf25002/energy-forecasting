@@ -2,6 +2,7 @@ name: Deploy forecast-24h-dl (CF Gen2 + Cloud Scheduler) - OPIM 5509
 # YOUR deep learning model (OPIM 5509 final project) forecasts Connecticut load for the next 24 hours.
 # It replaces forecast-24h: this workflow pauses forecast-24h's hourly job if it finds one, since both write the same files.
 # Run it by hand only: Actions -> "Deploy forecast-24h-dl" -> Run workflow (it never runs on a push).
+# Needs the repository variable COURSE = 5509, so an OPIM 5512 fork can't deploy it by mistake.
 
 on:
   workflow_dispatch:
@@ -28,9 +29,19 @@ env:
   CRON_EXPR: "20 * * * *"                              # :20 each hour (ET)
 
 jobs:
+  # OPIM 5512 forks see this workflow too: it only deploys when the repository variable COURSE is 5509
+  not-5509:
+    if: vars.COURSE != '5509'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop - this workflow is for OPIM 5509 only
+        run: |
+          echo "::error::forecast-24h-dl is the OPIM 5509 deep learning function. OPIM 5512 students: use 'Deploy forecast-24h' instead (nothing was changed). OPIM 5509 students: add the repository variable COURSE = 5509 (Settings > Secrets and variables > Actions > Variables), then run this again."
+          exit 1
+
   deploy:
-    # Deploys only from YOUR fork (the course repo has no Google Cloud project behind it)
-    if: github.repository_owner != 'drdave-teaching'
+    # Deploys only from YOUR fork (the course repo has no Google Cloud project behind it), and only for OPIM 5509
+    if: github.repository_owner != 'drdave-teaching' && vars.COURSE == '5509'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
