@@ -71,6 +71,11 @@ Every forecast hour can carry an **80% range**: `predicted_low_mw` (10th percent
 leaderboard shows is too narrow without retraining. The expected value always stays inside its range, and a broken range
 never stops the expected-value forecast (the run reports `"range_method": "error"` and why).
 
+## Optional: your own public dashboard (no points)
+[`dashboard/`](dashboard/) is a starter [Streamlit](https://streamlit.io) app that reads your bucket and shows your next 24 hours,
+your past forecasts against the real load, and your score (same rules as the class leaderboard). Run it in Cloud Shell in
+5 minutes, or put it on the internet for free with Streamlit Community Cloud. See [dashboard/README.md](dashboard/README.md).
+
 ## OPIM 5509: a deep learning model instead (`forecast-24h-dl`)
 OPIM 5509 students ship an LSTM instead of a scikit-learn model. Set up the energy project the same way, then deploy
 **`forecast-24h-dl`**: add one more repository variable, `COURSE` = `5509`, then Actions → "Deploy forecast-24h-dl" →
