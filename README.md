@@ -99,6 +99,9 @@ stale). The card's `range_method` picks the range:
 
 `"range_widen"` works as above. When the NWS fallback is used, `range_method` gets `_nws` added to it.
 
+Every run also writes `forecasts/run_summary.json`: the function's name, the Keras version and your network's layers.
+The OPIM 5509 leaderboard reads it and only scores forecasts made by `forecast-24h-dl` with a Keras network.
+
 ## Data credits
 Weather: Iowa State Mesonet (mesonet.agron.iastate.edu) and the National Weather Service. Load and forecasts: ISO New
 England (iso-ne.com, ISO Express web services). Each student uses their own ISO Express account.

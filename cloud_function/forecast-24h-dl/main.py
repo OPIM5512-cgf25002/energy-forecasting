@@ -24,6 +24,8 @@
 #        gs://<bucket>/energy/forecasts/latest.csv                       <- replaced every hour
 #        gs://<bucket>/energy/forecasts/history/<issued time>.csv        <- one file per hour, never overwritten
 #        gs://<bucket>/energy/datasets/forecasts_master.csv              <- every forecast you ever made, in one table
+#      plus gs://<bucket>/energy/forecasts/run_summary.json (this function, the Keras version and your network's layers),
+#      which the class leaderboard checks: OPIM 5509 forecasts must come from a Keras network you trained.
 # No model yet? It politely does nothing ("status": "no_model"). No ISO-NE data yet? "status": "no_load_data".
 # HTTP entrypoint: forecast_24h_dl_http
 
@@ -57,6 +59,9 @@ LATEST_KEY = f"{ENERGY_PREFIX}/forecasts/latest.csv"
 HISTORY_PREFIX = f"{ENERGY_PREFIX}/forecasts/history"
 MASTER_KEY = f"{ENERGY_PREFIX}/datasets/forecasts_master.csv"
 RANGE_METHODS = ["none", "lstm_hrrr_runs", "lstm_quantiles", "lstm_quantiles_pooled"]
+# What made this hour's forecast (this function, the Keras version, the network's layers): the class collector reads it
+# to check that every 5509 forecast comes from a Keras network
+RUN_SUMMARY_KEY = f"{ENERGY_PREFIX}/forecasts/run_summary.json"
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
 
@@ -163,6 +168,24 @@ def low_expected_high(pile_by_hour):
     return out[0], out[1], out[2]
 
 
+def network_layers(model):
+    """The network's layers by type, for example ['LSTM', 'RepeatVector', 'Concatenate', 'LSTM',
+    'TimeDistributed(Dense)']. A wrapper shows the layer inside it, and a model inside the model (an ensemble) lists its
+    own layers in brackets."""
+    names = []
+    for layer in model.layers:
+        name = layer.__class__.__name__
+        if name == "InputLayer":
+            continue
+        inner = getattr(layer, "layer", None)
+        if inner is not None:
+            name = name + "(" + inner.__class__.__name__ + ")"
+        if isinstance(layer, keras.Model):
+            name = name + "[" + ", ".join(network_layers(layer)) + "]"
+        names.append(name)
+    return names
+
+
 def run_once(dry_run: bool = False) -> dict:
     bucket = storage.Client(project=PROJECT_ID).bucket(GCS_BUCKET)
     if not bucket.blob(MODEL_KEY).exists() or not bucket.blob(CARD_KEY).exists():
@@ -173,6 +196,7 @@ def run_once(dry_run: bool = False) -> dict:
         path = os.path.join(folder, "model.keras")
         bucket.blob(MODEL_KEY).download_to_filename(path)
         model = keras.models.load_model(path, compile=False)     # the cloud never trains, so no loss function needed
+    layers = network_layers(model)
     model_version = str(card.get("trained_at", "unknown"))
     method = str(card.get("range_method", "none"))
     if method not in RANGE_METHODS:
@@ -255,7 +279,8 @@ def run_once(dry_run: bool = False) -> dict:
                "range_method": range_method,
                "avg_range_width_mw": None if np.isnan(low).all() else round(float(np.mean(high - low)), 1),
                "weather_source": weather_source, "weather_runs_used": len(tables),
-               "filled_weather_values": filled_weather, "filled_load_values": filled_load}
+               "filled_weather_values": filled_weather, "filled_load_values": filled_load,
+               "network": ", ".join(layers), "params": int(model.count_params())}
     if dry_run:
         summary["dry_run"] = True
         return summary
@@ -268,6 +293,10 @@ def run_once(dry_run: bool = False) -> dict:
     bucket.blob(MASTER_KEY).upload_from_string(master.to_csv(index=False), content_type="text/csv")
     summary["latest_key"] = LATEST_KEY
     summary["master_rows"] = int(len(master))
+    run_summary = {"function": "forecast-24h-dl", "keras_version": keras.__version__,
+                   "issued_at_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "model_version": model_version,
+                   "range_method": range_method, "layers": layers, "params": int(model.count_params())}
+    bucket.blob(RUN_SUMMARY_KEY).upload_from_string(json.dumps(run_summary, indent=1), content_type="application/json")
     return summary
 
 
