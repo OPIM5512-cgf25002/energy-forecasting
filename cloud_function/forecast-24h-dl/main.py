@@ -5,7 +5,8 @@
 # Every hour (:20, after the weather scrapers at :05 and the ISO-NE scraper at :15) this function:
 #   1. loads your live model:          gs://<bucket>/energy/models/model.keras (+ model_card.json)
 #   2. picks the next 24 FULL hours:   if it runs at 2:20 p.m., it forecasts 3 p.m. today ... 2 p.m. tomorrow
-#   3. builds the two inputs with make_inputs(), the SAME code as the final project notebooks (FP1 and FP2):
+#   3. builds the inputs, the SAME code as the final project notebooks: make_window() for a one-input model (FP1's
+#      Sequential LSTM: one 192-row table, past week + next 24 hours), make_inputs() for a two-input model (past, future):
 #        past   -> the last 168 hours of live load (ct_load_5min_hourly_master.csv) + hour of day
 #        future -> the weather for the next 24 hours + the calendar. Weather = the newest HRRR runs from Dr. Dave's
 #                  class file (HRRR_RUNS_URL) that reach a full day ahead; if that file is missing or stale, the newest
@@ -66,7 +67,7 @@ RUN_SUMMARY_KEY = f"{ENERGY_PREFIX}/forecasts/run_summary.json"
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
 
 # ----------------------------------------------------------------------------------------------------------------
-# calendar_features and make_inputs: copied word for word from the final project notebooks. Change them there,
+# calendar_features, make_inputs and make_window: copied word for word from the final project notebooks. Change them there,
 # change them here.
 # ----------------------------------------------------------------------------------------------------------------
 WEATHER = ["temp_f", "dewpoint_f", "rel_humidity_pct", "wind_speed_mph", "cloud_cover_pct"]
@@ -106,6 +107,32 @@ def make_inputs(issue_hour_utc, load, weather, card):
         scaled_weather.append((future_weather[column].values - card["weather_mean"][column]) / card["weather_std"][column])
     future = np.column_stack(scaled_weather + [calendar_features(future_hours).values])
     return past.astype("float32"), future.astype("float32")
+
+
+def make_window(issue_hour_utc, load, weather, card):
+    """The model's ONE input for ONE forecast issued at issue_hour_utc (FP1's Sequential LSTM): a table with one row
+    per hour and the columns in card["columns"].
+    Rows 1-168: the past week. The load is known (load_known = 1); the weather columns are 0.
+    Rows 169-192: the next 24 hours. The weather forecast and the calendar are filled in; the load is hidden
+    (load_known = 0, load_mw = 0), because that is what the model predicts."""
+    issue = pd.Timestamp(issue_hour_utc)
+    past_hours = pd.date_range(issue - pd.Timedelta(hours=card["lookback_hours"]), periods=card["lookback_hours"], freq="h")
+    future_hours = pd.date_range(issue + pd.Timedelta(hours=1), periods=card["horizon_hours"], freq="h")
+
+    past = calendar_features(past_hours)
+    for column in WEATHER:
+        past[column] = 0.0
+    past["load_known"] = 1.0
+    past["load_mw"] = (load.reindex(past_hours).values - card["load_mean"]) / card["load_std"]
+
+    future = calendar_features(future_hours)
+    for column in WEATHER:
+        future[column] = (weather[column].reindex(future_hours).values - card["weather_mean"][column]) / card["weather_std"][column]
+    future["load_known"] = 0.0
+    future["load_mw"] = 0.0
+
+    window = pd.concat([past, future])
+    return window[card["columns"]].values.astype("float32")
 # ----------------------------------------------------------------------------------------------------------------
 
 
@@ -146,12 +173,25 @@ def hrrr_run_tables(targets, n_runs, now):
     return tables[-n_runs:]
 
 
-def predict_piles(model, card, past, futures, medians_only):
-    """Run the model once per weather run. Returns one pile per hour: (24, values), where values = runs (a one-number
-    model, or each run's 50th percentile when medians_only) or runs x percentiles (a percentile model, sorted so they
-    never cross)."""
+def predict_scaled(model, card, this_hour, past_load, tables):
+    """Run the model once per weather run (one table per run). A one-input model (FP1's Sequential LSTM) gets one
+    make_window table per run; a two-input model (past, future) gets make_inputs. Returns the scaled predictions."""
+    if len(model.inputs) == 1:
+        windows = []
+        for table in tables:
+            windows.append(make_window(this_hour, past_load, table, card))
+        return np.asarray(model.predict(np.stack(windows), verbose=0))
+    futures = []
+    for table in tables:
+        past, future = make_inputs(this_hour, past_load, table, card)
+        futures.append(future)
     past_batch = np.repeat(past[np.newaxis], len(futures), axis=0)
-    scaled = np.asarray(model.predict([past_batch, np.stack(futures)], verbose=0))
+    return np.asarray(model.predict([past_batch, np.stack(futures)], verbose=0))
+
+
+def predict_piles(card, scaled, medians_only):
+    """One pile per hour: (24, values), where values = runs (a one-number model, or each run's 50th percentile when
+    medians_only) or runs x percentiles (a percentile model, sorted so they never cross)."""
     mw = scaled * card["load_std"] + card["load_mean"]
     if mw.ndim == 2:                   # (runs, 24): one forecast per hour
         return mw.T
@@ -247,11 +287,11 @@ def run_once(dry_run: bool = False) -> dict:
         tables = [nws]
         weather_source = "nws_fallback"
 
-    futures = []
-    for table in tables:
-        past, future = make_inputs(this_hour, past_load, table, card)
-        futures.append(future)
-    piles = predict_piles(model, card, past, futures, medians_only=(method == "lstm_hrrr_runs"))
+    if len(model.inputs) == 1 and "columns" not in card:
+        return {"status": "bad_card", "message": "This model has one input, so model_card.json needs the \"columns\" list "
+                "(FP1 Part 7 writes it)."}
+    scaled = predict_scaled(model, card, this_hour, past_load, tables)
+    piles = predict_piles(card, scaled, medians_only=(method == "lstm_hrrr_runs"))
     low, expected, high = low_expected_high(piles)
     if method == "none":
         low = np.full(horizon, np.nan)
